@@ -1,0 +1,61 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.cartoonuploaderai'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.cartoonuploaderai'
+        minSdk 29
+        targetSdk 35
+        versionCode 1
+        versionName '1.0.0'
+    }
+
+    signingConfigs {
+        ciRelease {
+            if (project.hasProperty('signingStoreFile')) {
+                storeFile file(project.property('signingStoreFile'))
+                storePassword project.property('signingStorePassword')
+                keyAlias project.property('signingKeyAlias')
+                keyPassword project.property('signingKeyPassword')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            signingConfig project.hasProperty('signingStoreFile') ? signingConfigs.ciRelease : signingConfigs.debug
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.15.0'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.activity:activity-ktx:1.10.1'
+    implementation 'com.google.android.material:material:1.12.0'
+
+    def media3_version = '1.11.0'
+    implementation "androidx.media3:media3-common:$media3_version"
+    implementation "androidx.media3:media3-effect:$media3_version"
+    implementation "androidx.media3:media3-transformer:$media3_version"
+}
