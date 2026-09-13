@@ -30,14 +30,33 @@
         <EditText
             android:id="@+id/promptInput"
             android:layout_width="match_parent"
-            android:layout_height="120dp"
+            android:layout_height="140dp"
             android:layout_marginTop="18dp"
             android:backgroundTint="@color/brand_primary"
             android:gravity="top|start"
-            android:hint="Example: Kari and her friends dance happily in a colorful fruit garden"
+            android:hint="Example: Kari walks into a fruit garden. Then she meets her friends. Then they dance together."
             android:inputType="textCapSentences|textMultiLine"
-            android:maxLength="500"
+            android:maxLength="1200"
             android:padding="12dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="Generation mode"
+            android:textStyle="bold" />
+
+        <Spinner
+            android:id="@+id/modeSpinner"
+            android:layout_width="match_parent"
+            android:layout_height="48dp" />
+
+        <TextView
+            android:id="@+id/modeInfo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Single Clip keeps the original proven generation path. Story Mode uses sequential 5-second scenes."
+            android:textSize="12sp" />
 
         <TextView
             android:layout_width="wrap_content"
