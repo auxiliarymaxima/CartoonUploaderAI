@@ -57,7 +57,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var exportButton: Button
     private lateinit var progressBar: ProgressBar
     private lateinit var statusLabel: TextView
+    private lateinit var diagnosticLabel: TextView
+    private lateinit var testServiceButton: Button
+    private lateinit var copyDiagnosticsButton: Button
+    private lateinit var clearGenerationButton: Button
     private lateinit var videoPreview: VideoView
+
+    private lateinit var diagnostics: DiagnosticCenter
 
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private var selectedAudioUri: Uri? = null
@@ -84,8 +90,18 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        diagnostics =
+            DiagnosticCenter(
+                this,
+                SPACE_BASE + CALL_PATH
+            )
+
         bindViews()
         configureSpinners()
+
+        diagnosticLabel.text =
+            diagnostics.restoredSummary()
 
         audioButton.setOnClickListener { audioPicker.launch(arrayOf("audio/*")) }
         generateButton.setOnClickListener {
@@ -95,7 +111,21 @@ class MainActivity : AppCompatActivity() {
                 generateStoryVideo()
             }
         }
-        exportButton.setOnClickListener { exportVideo() }
+        exportButton.setOnClickListener {
+            exportVideo()
+        }
+
+        testServiceButton.setOnClickListener {
+            testAiService()
+        }
+
+        copyDiagnosticsButton.setOnClickListener {
+            copyDiagnostics()
+        }
+
+        clearGenerationButton.setOnClickListener {
+            clearFailedGeneration()
+        }
 
         videoPreview.setOnPreparedListener { player ->
             player.isLooping = true
@@ -115,8 +145,23 @@ class MainActivity : AppCompatActivity() {
         generateButton = findViewById(R.id.generateButton)
         exportButton = findViewById(R.id.exportButton)
         progressBar = findViewById(R.id.progressBar)
-        statusLabel = findViewById(R.id.statusLabel)
-        videoPreview = findViewById(R.id.videoPreview)
+        statusLabel =
+            findViewById(R.id.statusLabel)
+
+        diagnosticLabel =
+            findViewById(R.id.diagnosticLabel)
+
+        testServiceButton =
+            findViewById(R.id.testServiceButton)
+
+        copyDiagnosticsButton =
+            findViewById(R.id.copyDiagnosticsButton)
+
+        clearGenerationButton =
+            findViewById(R.id.clearGenerationButton)
+
+        videoPreview =
+            findViewById(R.id.videoPreview)
     }
 
     private fun configureSpinners() {
@@ -150,7 +195,15 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        setBusy(true, "Submitting to free AI generator…", 8)
+        diagnostics.begin("SINGLE_CLIP")
+        diagnostics.setScene(1, 1)
+        updateDiagnosticSummary()
+
+        setBusy(
+            true,
+            "Submitting to free AI generator…",
+            8
+        )
         generatedVideoFile = null
         exportButton.isEnabled = false
         videoPreview.stopPlayback()
@@ -182,11 +235,20 @@ class MainActivity : AppCompatActivity() {
                     setControlsEnabled(true)
                 }
             } catch (e: Exception) {
+                val snapshot =
+                    diagnostics.capture(
+                        e,
+                        "SINGLE_GENERATION"
+                    )
+
                 runOnUiThread {
                     setControlsEnabled(true)
                     progressBar.progress = 0
-                    statusLabel.text = friendlyError(e)
-                    Toast.makeText(this, friendlyError(e), Toast.LENGTH_LONG).show()
+
+                    showDiagnosticFailure(
+                        snapshot,
+                        "Generation failed"
+                    )
                 }
             }
         }
@@ -224,7 +286,24 @@ class MainActivity : AppCompatActivity() {
             storyCacheKey = cacheKey
         }
 
-        val plannedScenes = planStoryScenes(userPrompt, sceneCount)
+        diagnostics.begin(
+            "STORY_${sceneCount}_SCENES"
+        )
+
+        diagnostics.stage(
+            "STORY_PLAN",
+            "requestedScenes=$sceneCount cachedScenes=${
+                storySceneFiles.count { it.exists() }
+            }"
+        )
+
+        updateDiagnosticSummary()
+
+        val plannedScenes =
+            planStoryScenes(
+                userPrompt,
+                sceneCount
+            )
 
         generatedVideoFile = null
         exportButton.isEnabled = false
@@ -247,8 +326,18 @@ class MainActivity : AppCompatActivity() {
         ioExecutor.execute {
             try {
                 for (index in completed until sceneCount) {
-                    val sceneNumber = index + 1
-                    val baseProgress = 8 + ((index * 68) / sceneCount)
+                    val sceneNumber =
+                        index + 1
+
+                    diagnostics.setScene(
+                        sceneNumber,
+                        sceneCount
+                    )
+
+                    updateDiagnosticSummary()
+
+                    val baseProgress =
+                        8 + ((index * 68) / sceneCount)
 
                     updateStatus(
                         "Scene $sceneNumber/$sceneCount: waiting for free GPU...",
@@ -295,21 +384,33 @@ class MainActivity : AppCompatActivity() {
                 }
 
             } catch (e: Exception) {
+
+                val snapshot =
+                    diagnostics.capture(
+                        e,
+                        "STORY_GENERATION"
+                    )
+
                 runOnUiThread {
+
                     setControlsEnabled(true)
+
                     progressBar.progress = 0
 
-                    val completedNow = storySceneFiles.count { it.exists() }
+                    val completedNow =
+                        storySceneFiles.count {
+                            it.exists()
+                        }
 
-                    statusLabel.text =
-                        "Story paused after $completedNow/$sceneCount scene(s). " +
-                        "Tap Generate again to continue. ${friendlyError(e)}"
+                    showDiagnosticFailure(
+                        snapshot,
+                        "Story paused after $completedNow/$sceneCount scene(s)"
+                    )
 
-                    Toast.makeText(
-                        this,
-                        "Story paused. Completed scenes were kept.",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    modeInfo.text =
+                        "Completed scenes were kept. " +
+                        "Tap Generate again to retry " +
+                        "from the failed scene."
                 }
             }
         }
@@ -388,7 +489,18 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        setBusy(true, "Joining ${scenes.size} scenes locally...", 88)
+        diagnostics.stage(
+            "STITCH_START",
+            "sceneCount=${scenes.size}"
+        )
+
+        updateDiagnosticSummary()
+
+        setBusy(
+            true,
+            "Joining ${scenes.size} scenes locally...",
+            88
+        )
 
         val output = File(
             cacheDir,
@@ -417,7 +529,15 @@ class MainActivity : AppCompatActivity() {
                     transformer = null
                     generatedVideoFile = output
 
+                    diagnostics.stage(
+                        "STITCH_OK",
+                        "sceneCount=${scenes.size} " +
+                        "outputBytes=${output.length()}"
+                    )
+
                     runOnUiThread {
+
+                        updateDiagnosticSummary()
                         progressBar.progress = 100
                         statusLabel.text =
                             "Story ready: ${scenes.size * 5} seconds. Preview it, then export."
@@ -437,12 +557,28 @@ class MainActivity : AppCompatActivity() {
                     transformer = null
                     output.delete()
 
+                    val snapshot =
+                        diagnostics.capture(
+                            diagnostics.fail(
+                                DiagnosticCategory.STITCH_ERROR,
+                                "STITCH",
+                                exportException.message
+                                    ?: "Unknown Media3 stitching error",
+                                exportException
+                            ),
+                            "STITCH"
+                        )
+
                     runOnUiThread {
+
                         setControlsEnabled(true)
+
                         progressBar.progress = 0
-                        statusLabel.text =
-                            "Scenes were generated but joining failed: " +
-                            (exportException.message ?: "unknown media error")
+
+                        showDiagnosticFailure(
+                            snapshot,
+                            "Story joining failed"
+                        )
                     }
                 }
             })
@@ -466,64 +602,466 @@ class MainActivity : AppCompatActivity() {
         return finalPrompt.take(590)
     }
 
-    private fun startGradioJob(prompt: String, aspect: String, duration: Int): String {
-        val body = JSONObject().put(
-            "data",
-            JSONArray().put(JSONObject.NULL).put(prompt).put(aspect).put(duration)
-        ).toString()
+    private fun startGradioJob(
+        prompt: String,
+        aspect: String,
+        duration: Int
+    ): String {
 
-        val connection = (URL(SPACE_BASE + CALL_PATH).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 30_000
-            readTimeout = 30_000
-            doOutput = true
-            setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("Accept", "application/json")
+        val body =
+            JSONObject()
+                .put(
+                    "data",
+                    JSONArray()
+                        .put(JSONObject.NULL)
+                        .put(prompt)
+                        .put(aspect)
+                        .put(duration)
+                )
+                .toString()
+
+        diagnostics.stage(
+            "SUBMIT_REQUEST",
+            "POST $CALL_PATH " +
+            "promptChars=${prompt.length} " +
+            "aspect=$aspect duration=${duration}s"
+        )
+
+        updateDiagnosticSummary()
+
+        try {
+
+            val connection =
+                (
+                    URL(
+                        SPACE_BASE + CALL_PATH
+                    ).openConnection()
+                    as HttpURLConnection
+                ).apply {
+
+                    requestMethod = "POST"
+                    connectTimeout = 30_000
+                    readTimeout = 30_000
+                    doOutput = true
+
+                    setRequestProperty(
+                        "Content-Type",
+                        "application/json"
+                    )
+
+                    setRequestProperty(
+                        "Accept",
+                        "application/json"
+                    )
+                }
+
+            try {
+
+                connection.outputStream.use {
+                    it.write(
+                        body.toByteArray(
+                            Charsets.UTF_8
+                        )
+                    )
+                }
+
+                val responseCode =
+                    connection.responseCode
+
+                val stream =
+                    if (
+                        responseCode in 200..299
+                    ) {
+                        connection.inputStream
+                    } else {
+                        connection.errorStream
+                    }
+
+                val text =
+                    stream
+                        ?.bufferedReader()
+                        ?.use {
+                            it.readText()
+                        }
+                        .orEmpty()
+
+                diagnostics.stage(
+                    "SUBMIT_RESPONSE",
+                    "HTTP $responseCode body=${
+                        diagSnippet(
+                            text,
+                            350
+                        )
+                    }"
+                )
+
+                if (
+                    responseCode !in 200..299
+                ) {
+
+                    val category =
+                        when {
+
+                            responseCode == 429 ->
+                                DiagnosticCategory.QUEUE_ERROR
+
+                            responseCode in 500..599 ->
+                                DiagnosticCategory.SERVICE_ERROR
+
+                            else ->
+                                DiagnosticCategory.API_VALIDATION_ERROR
+                        }
+
+                    throw diagnostics.fail(
+                        category,
+                        "SUBMIT_HTTP",
+                        "HTTP $responseCode body=${
+                            diagSnippet(
+                                text,
+                                700
+                            )
+                        }"
+                    )
+                }
+
+                val eventId =
+                    try {
+                        JSONObject(text)
+                            .optString(
+                                "event_id"
+                            )
+                    } catch (
+                        e: Exception
+                    ) {
+
+                        throw diagnostics.fail(
+                            DiagnosticCategory.RESULT_PARSE_ERROR,
+                            "SUBMIT_PARSE",
+                            "Could not parse submit response: ${
+                                diagSnippet(
+                                    text,
+                                    700
+                                )
+                            }",
+                            e
+                        )
+                    }
+
+                if (
+                    eventId.isBlank()
+                ) {
+
+                    throw diagnostics.fail(
+                        DiagnosticCategory.RESULT_PARSE_ERROR,
+                        "SUBMIT_PARSE",
+                        "Successful HTTP response did not contain event_id. body=${
+                            diagSnippet(
+                                text,
+                                700
+                            )
+                        }"
+                    )
+                }
+
+                diagnostics.setEventId(
+                    eventId
+                )
+
+                diagnostics.stage(
+                    "JOB_ACCEPTED",
+                    "eventId=$eventId"
+                )
+
+                updateDiagnosticSummary()
+
+                return eventId
+
+            } finally {
+
+                connection.disconnect()
+            }
+
+        } catch (
+            e: DiagnosticFailure
+        ) {
+
+            throw e
+
+        } catch (
+            e: Exception
+        ) {
+
+            throw diagnostics.asFailure(
+                "SUBMIT_REQUEST",
+                e
+            )
         }
-        connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-        val responseCode = connection.responseCode
-        val text = (if (responseCode in 200..299) connection.inputStream else connection.errorStream)
-            .bufferedReader().use { it.readText() }
-        connection.disconnect()
-        if (responseCode !in 200..299) error("AI service returned HTTP $responseCode: $text")
-        return JSONObject(text).optString("event_id").takeIf { it.isNotBlank() }
-            ?: error("AI service did not return a job id")
     }
 
-    private fun waitForGradioResult(eventId: String): String {
-        val connection = (URL("$SPACE_BASE$CALL_PATH/$eventId").openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 30_000
-            readTimeout = 600_000
-            setRequestProperty("Accept", "text/event-stream")
-        }
-        if (connection.responseCode !in 200..299) {
-            val message = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-            connection.disconnect()
-            error("AI queue connection failed: $message")
-        }
+    private fun waitForGradioResult(
+        eventId: String
+    ): String {
 
-        var event = ""
-        BufferedReader(InputStreamReader(connection.inputStream)).use { reader ->
-            while (true) {
-                val line = reader.readLine() ?: break
-                if (line.startsWith("event:")) {
-                    event = line.substringAfter(':').trim()
-                } else if (line.startsWith("data:")) {
-                    val data = line.substringAfter(':').trim()
-                    if (event == "error") error("AI generation failed: $data")
-                    if (event == "complete") {
-                        val parsed = JSONTokener(data).nextValue()
-                        val url = extractMp4Url(parsed)
-                            ?: error("AI completed but no MP4 URL was returned")
-                        connection.disconnect()
-                        return url
+        diagnostics.stage(
+            "QUEUE_CONNECT",
+            "eventId=$eventId"
+        )
+
+        updateDiagnosticSummary()
+
+        try {
+
+            val connection =
+                (
+                    URL(
+                        "$SPACE_BASE$CALL_PATH/$eventId"
+                    ).openConnection()
+                    as HttpURLConnection
+                ).apply {
+
+                    requestMethod = "GET"
+                    connectTimeout = 30_000
+                    readTimeout = 600_000
+
+                    setRequestProperty(
+                        "Accept",
+                        "text/event-stream"
+                    )
+                }
+
+            try {
+
+                val responseCode =
+                    connection.responseCode
+
+                if (
+                    responseCode !in 200..299
+                ) {
+
+                    val message =
+                        connection
+                            .errorStream
+                            ?.bufferedReader()
+                            ?.use {
+                                it.readText()
+                            }
+                            .orEmpty()
+
+                    val category =
+                        when {
+
+                            responseCode == 429 ->
+                                DiagnosticCategory.QUEUE_ERROR
+
+                            responseCode in 500..599 ->
+                                DiagnosticCategory.SERVICE_ERROR
+
+                            else ->
+                                DiagnosticCategory.API_VALIDATION_ERROR
+                        }
+
+                    throw diagnostics.fail(
+                        category,
+                        "QUEUE_HTTP",
+                        "HTTP $responseCode body=${
+                            diagSnippet(
+                                message,
+                                700
+                            )
+                        }"
+                    )
+                }
+
+                diagnostics.stage(
+                    "QUEUE_CONNECTED",
+                    "HTTP $responseCode"
+                )
+
+                updateDiagnosticSummary()
+
+                var event = ""
+
+                BufferedReader(
+                    InputStreamReader(
+                        connection.inputStream
+                    )
+                ).use { reader ->
+
+                    while (true) {
+
+                        val line =
+                            reader.readLine()
+                                ?: break
+
+                        if (
+                            line.startsWith(
+                                "event:"
+                            )
+                        ) {
+
+                            event =
+                                line.substringAfter(
+                                    ':'
+                                ).trim()
+
+                            diagnostics.stage(
+                                "SSE_EVENT",
+                                "event=$event"
+                            )
+
+                        } else if (
+                            line.startsWith(
+                                "data:"
+                            )
+                        ) {
+
+                            val data =
+                                line.substringAfter(
+                                    ':'
+                                ).trim()
+
+                            diagnostics.stage(
+                                "SSE_DATA",
+                                "event=$event data=${
+                                    diagSnippet(
+                                        data,
+                                        300
+                                    )
+                                }"
+                            )
+
+                            if (
+                                event == "error"
+                            ) {
+
+                                val category =
+                                    if (
+                                        data.contains(
+                                            "queue",
+                                            ignoreCase = true
+                                        ) ||
+                                        data.contains(
+                                            "busy",
+                                            ignoreCase = true
+                                        ) ||
+                                        data.contains(
+                                            "429"
+                                        )
+                                    ) {
+
+                                        DiagnosticCategory.QUEUE_ERROR
+
+                                    } else {
+
+                                        DiagnosticCategory.SERVICE_ERROR
+                                    }
+
+                                throw diagnostics.fail(
+                                    category,
+                                    "SSE_ERROR",
+                                    "event=error data=${
+                                        diagSnippet(
+                                            data,
+                                            900
+                                        )
+                                    } eventId=$eventId"
+                                )
+                            }
+
+                            if (
+                                event ==
+                                "complete"
+                            ) {
+
+                                val parsed =
+                                    try {
+
+                                        JSONTokener(
+                                            data
+                                        ).nextValue()
+
+                                    } catch (
+                                        e: Exception
+                                    ) {
+
+                                        throw diagnostics.fail(
+                                            DiagnosticCategory.RESULT_PARSE_ERROR,
+                                            "RESULT_JSON_PARSE",
+                                            "complete event was not valid JSON: ${
+                                                diagSnippet(
+                                                    data,
+                                                    900
+                                                )
+                                            }",
+                                            e
+                                        )
+                                    }
+
+                                val url =
+                                    extractMp4Url(
+                                        parsed
+                                    )
+
+                                if (
+                                    url == null
+                                ) {
+
+                                    throw diagnostics.fail(
+                                        DiagnosticCategory.RESULT_PARSE_ERROR,
+                                        "RESULT_VIDEO_URL",
+                                        "complete event contained no usable MP4 URL: ${
+                                            diagSnippet(
+                                                data,
+                                                1200
+                                            )
+                                        }"
+                                    )
+                                }
+
+                                diagnostics.stage(
+                                    "RESULT_READY",
+                                    "videoUrl=${
+                                        diagSnippet(
+                                            url,
+                                            300
+                                        )
+                                    }"
+                                )
+
+                                updateDiagnosticSummary()
+
+                                return url
+                            }
+                        }
                     }
                 }
+
+                throw diagnostics.fail(
+                    DiagnosticCategory.QUEUE_ERROR,
+                    "QUEUE_STREAM_ENDED",
+                    "Event stream ended before complete/error event. eventId=$eventId"
+                )
+
+            } finally {
+
+                connection.disconnect()
             }
+
+        } catch (
+            e: DiagnosticFailure
+        ) {
+
+            throw e
+
+        } catch (
+            e: Exception
+        ) {
+
+            throw diagnostics.asFailure(
+                "QUEUE_STREAM",
+                e
+            )
         }
-        connection.disconnect()
-        error("AI generation ended before a video was returned")
     }
 
     private fun extractMp4Url(value: Any?): String? {
@@ -567,22 +1105,139 @@ class MainActivity : AppCompatActivity() {
         return null
     }
 
-    private fun downloadFile(sourceUrl: String, output: File) {
-        val connection = (URL(sourceUrl).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 30_000
-            readTimeout = 180_000
-            instanceFollowRedirects = true
+    private fun downloadFile(
+        sourceUrl: String,
+        output: File
+    ) {
+
+        diagnostics.stage(
+            "DOWNLOAD_REQUEST",
+            "GET ${
+                diagSnippet(
+                    sourceUrl,
+                    320
+                )
+            }"
+        )
+
+        updateDiagnosticSummary()
+
+        try {
+
+            val connection =
+                (
+                    URL(
+                        sourceUrl
+                    ).openConnection()
+                    as HttpURLConnection
+                ).apply {
+
+                    connectTimeout = 30_000
+                    readTimeout = 180_000
+                    instanceFollowRedirects = true
+                }
+
+            try {
+
+                val responseCode =
+                    connection.responseCode
+
+                diagnostics.stage(
+                    "DOWNLOAD_RESPONSE",
+                    "HTTP $responseCode " +
+                    "contentType=${connection.contentType} " +
+                    "contentLength=${connection.contentLengthLong}"
+                )
+
+                if (
+                    responseCode !in 200..299
+                ) {
+
+                    val errorText =
+                        connection
+                            .errorStream
+                            ?.bufferedReader()
+                            ?.use {
+                                it.readText()
+                            }
+                            .orEmpty()
+
+                    throw diagnostics.fail(
+                        DiagnosticCategory.DOWNLOAD_ERROR,
+                        "DOWNLOAD_HTTP",
+                        "HTTP $responseCode body=${
+                            diagSnippet(
+                                errorText,
+                                700
+                            )
+                        }"
+                    )
+                }
+
+                connection
+                    .inputStream
+                    .use { input ->
+
+                        FileOutputStream(
+                            output
+                        ).use { destination ->
+
+                            input.copyTo(
+                                destination
+                            )
+                        }
+                    }
+
+            } finally {
+
+                connection.disconnect()
+            }
+
+            if (
+                !output.exists() ||
+                output.length() < 8_000
+            ) {
+
+                throw diagnostics.fail(
+                    DiagnosticCategory.DOWNLOAD_ERROR,
+                    "DOWNLOAD_FILE_CHECK",
+                    "Downloaded file missing or too small. " +
+                    "exists=${output.exists()} " +
+                    "bytes=${
+                        if (
+                            output.exists()
+                        ) {
+                            output.length()
+                        } else {
+                            0
+                        }
+                    }"
+                )
+            }
+
+            diagnostics.stage(
+                "DOWNLOAD_OK",
+                "bytes=${output.length()} " +
+                "file=${output.name}"
+            )
+
+            updateDiagnosticSummary()
+
+        } catch (
+            e: DiagnosticFailure
+        ) {
+
+            throw e
+
+        } catch (
+            e: Exception
+        ) {
+
+            throw diagnostics.asFailure(
+                "DOWNLOAD",
+                e
+            )
         }
-        if (connection.responseCode !in 200..299) {
-            val code = connection.responseCode
-            connection.disconnect()
-            error("Generated video download failed with HTTP $code")
-        }
-        connection.inputStream.use { input ->
-            FileOutputStream(output).use { destination -> input.copyTo(destination) }
-        }
-        connection.disconnect()
-        if (!output.exists() || output.length() < 8_000) error("Downloaded video file was incomplete")
     }
 
     private fun exportVideo() {
@@ -592,6 +1247,14 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val audio = selectedAudioUri
+
+        diagnostics.stage(
+            "EXPORT_START",
+            "audioSelected=${audio != null} " +
+            "videoBytes=${video.length()}"
+        )
+
+        updateDiagnosticSummary()
         if (audio == null) {
             setBusy(true, "Saving video to Downloads…", 88)
             ioExecutor.execute {
@@ -608,7 +1271,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun mixAudioAndExport(video: File, audio: Uri) {
-        setBusy(true, "Mixing audio under the AI video…", 82)
+        diagnostics.stage(
+            "AUDIO_MIX_START",
+            "audioUri=$audio"
+        )
+
+        updateDiagnosticSummary()
+
+        setBusy(
+            true,
+            "Mixing audio under the AI video…",
+            82
+        )
         val mixedFile = File(cacheDir, "kids_video_mixed_${System.currentTimeMillis()}.mp4")
 
         val videoItem = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(video)))
@@ -626,8 +1300,22 @@ class MainActivity : AppCompatActivity() {
             .setVideoMimeType(MimeTypes.VIDEO_H264)
             .setAudioMimeType(MimeTypes.AUDIO_AAC)
             .addListener(object : Transformer.Listener {
-                override fun onCompleted(composition: Composition, exportResult: ExportResult) {
-                    updateStatus("Finalizing file in Downloads…", 94)
+                override fun onCompleted(
+                    composition: Composition,
+                    exportResult: ExportResult
+                ) {
+
+                    diagnostics.stage(
+                        "AUDIO_MIX_OK",
+                        "mixedBytes=${mixedFile.length()}"
+                    )
+
+                    updateDiagnosticSummary()
+
+                    updateStatus(
+                        "Finalizing file in Downloads…",
+                        94
+                    )
                     ioExecutor.execute {
                         try {
                             val saved = saveToDownloads(mixedFile)
@@ -645,7 +1333,16 @@ class MainActivity : AppCompatActivity() {
                     exportException: ExportException
                 ) {
                     mixedFile.delete()
-                    exportFailed(exportException)
+
+                    exportFailed(
+                        diagnostics.fail(
+                            DiagnosticCategory.EXPORT_ERROR,
+                            "AUDIO_MIX",
+                            exportException.message
+                                ?: "Unknown Media3 audio mix error",
+                            exportException
+                        )
+                    )
                 }
             })
             .build()
@@ -653,27 +1350,140 @@ class MainActivity : AppCompatActivity() {
         transformer?.start(composition, mixedFile.absolutePath)
     }
 
-    private fun saveToDownloads(source: File): Uri {
-        val name = "KidsAI_${System.currentTimeMillis()}.mp4"
-        val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/KidsVideoCreator")
-            put(MediaStore.MediaColumns.IS_PENDING, 1)
-        }
-        val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: error("Android could not create the Downloads file")
+    private fun saveToDownloads(
+        source: File
+    ): Uri {
+
+        diagnostics.stage(
+            "SAVE_TO_PHONE_START",
+            "source=${source.name} " +
+            "bytes=${source.length()}"
+        )
+
+        updateDiagnosticSummary()
+
+        val name =
+            "KidsAI_${System.currentTimeMillis()}.mp4"
+
+        var uri: Uri? = null
+
         try {
-            contentResolver.openOutputStream(uri)?.use { output ->
-                source.inputStream().use { input -> input.copyTo(output) }
-            } ?: error("Android could not open the Downloads file")
+
+            val values =
+                ContentValues().apply {
+
+                    put(
+                        MediaStore.MediaColumns.DISPLAY_NAME,
+                        name
+                    )
+
+                    put(
+                        MediaStore.MediaColumns.MIME_TYPE,
+                        "video/mp4"
+                    )
+
+                    put(
+                        MediaStore.MediaColumns.RELATIVE_PATH,
+                        "${Environment.DIRECTORY_DOWNLOADS}/KidsVideoCreator"
+                    )
+
+                    put(
+                        MediaStore.MediaColumns.IS_PENDING,
+                        1
+                    )
+                }
+
+            uri =
+                contentResolver.insert(
+                    MediaStore
+                        .Downloads
+                        .EXTERNAL_CONTENT_URI,
+                    values
+                )
+                    ?: throw diagnostics.fail(
+                        DiagnosticCategory.EXPORT_ERROR,
+                        "SAVE_TO_PHONE_INSERT",
+                        "MediaStore returned null while creating the Downloads file."
+                    )
+
+            contentResolver
+                .openOutputStream(
+                    uri
+                )
+                ?.use { output ->
+
+                    source
+                        .inputStream()
+                        .use { input ->
+
+                            input.copyTo(
+                                output
+                            )
+                        }
+                }
+                ?: throw diagnostics.fail(
+                    DiagnosticCategory.EXPORT_ERROR,
+                    "SAVE_TO_PHONE_STREAM",
+                    "Android could not open the output stream."
+                )
+
             values.clear()
-            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
-            contentResolver.update(uri, values, null, null)
+
+            values.put(
+                MediaStore.MediaColumns.IS_PENDING,
+                0
+            )
+
+            contentResolver.update(
+                uri,
+                values,
+                null,
+                null
+            )
+
+            diagnostics.stage(
+                "SAVE_TO_PHONE_OK",
+                "uri=$uri filename=$name"
+            )
+
+            updateDiagnosticSummary()
+
             return uri
-        } catch (e: Exception) {
-            contentResolver.delete(uri, null, null)
+
+        } catch (
+            e: DiagnosticFailure
+        ) {
+
+            uri?.let {
+                contentResolver.delete(
+                    it,
+                    null,
+                    null
+                )
+            }
+
             throw e
+
+        } catch (
+            e: Exception
+        ) {
+
+            uri?.let {
+                contentResolver.delete(
+                    it,
+                    null,
+                    null
+                )
+            }
+
+            throw diagnostics.fail(
+                DiagnosticCategory.EXPORT_ERROR,
+                "SAVE_TO_PHONE",
+                "${e.javaClass.simpleName}: ${
+                    e.message ?: "(no message)"
+                }",
+                e
+            )
         }
     }
 
@@ -681,17 +1491,270 @@ class MainActivity : AppCompatActivity() {
         transformer = null
         setControlsEnabled(true)
         progressBar.progress = 100
-        statusLabel.text = "Saved successfully to Downloads/KidsVideoCreator"
-        Toast.makeText(this, "Video saved to Downloads/KidsVideoCreator", Toast.LENGTH_LONG).show()
+        diagnostics.stage(
+            "EXPORT_COMPLETE",
+            "savedUri=$uri"
+        )
+
+        updateDiagnosticSummary()
+
+        statusLabel.text =
+            "Saved successfully to Downloads/KidsVideoCreator"
+
+        Toast.makeText(
+            this,
+            "Video saved to Downloads/KidsVideoCreator",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
-    private fun exportFailed(e: Exception) {
+    private fun exportFailed(
+        e: Exception
+    ) {
+
         transformer = null
+
         setControlsEnabled(true)
+
         progressBar.progress = 0
-        val message = "Export failed: ${e.message ?: "unknown media error"}"
-        statusLabel.text = message
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+
+        val snapshot =
+            diagnostics.capture(
+                e,
+                "EXPORT"
+            )
+
+        showDiagnosticFailure(
+            snapshot,
+            "Export failed"
+        )
+    }
+
+    private fun testAiService() {
+
+        diagnostics.begin(
+            "SERVICE_TEST"
+        )
+
+        diagnostics.stage(
+            "SERVICE_TEST_REQUEST",
+            "GET $SPACE_BASE"
+        )
+
+        updateDiagnosticSummary()
+
+        setBusy(
+            true,
+            "Testing external AI service…",
+            15
+        )
+
+        ioExecutor.execute {
+
+            try {
+
+                val started =
+                    System.currentTimeMillis()
+
+                val connection =
+                    (
+                        URL(
+                            SPACE_BASE
+                        ).openConnection()
+                        as HttpURLConnection
+                    ).apply {
+
+                        requestMethod = "GET"
+                        connectTimeout = 15_000
+                        readTimeout = 15_000
+                        instanceFollowRedirects = true
+                    }
+
+                try {
+
+                    val code =
+                        connection.responseCode
+
+                    val elapsed =
+                        System.currentTimeMillis()
+                        - started
+
+                    diagnostics.stage(
+                        "SERVICE_TEST_RESPONSE",
+                        "HTTP $code " +
+                        "latencyMs=$elapsed " +
+                        "contentType=${connection.contentType}"
+                    )
+
+                    if (
+                        code !in 200..399
+                    ) {
+
+                        throw diagnostics.fail(
+                            DiagnosticCategory.SERVICE_ERROR,
+                            "SERVICE_TEST_HTTP",
+                            "External Space returned HTTP $code"
+                        )
+                    }
+
+                    runOnUiThread {
+
+                        setControlsEnabled(true)
+
+                        progressBar.progress = 100
+
+                        statusLabel.text =
+                            "AI service is reachable " +
+                            "(HTTP $code, ${elapsed}ms)."
+
+                        updateDiagnosticSummary()
+                    }
+
+                } finally {
+
+                    connection.disconnect()
+                }
+
+            } catch (
+                e: Exception
+            ) {
+
+                val snapshot =
+                    diagnostics.capture(
+                        e,
+                        "SERVICE_TEST"
+                    )
+
+                runOnUiThread {
+
+                    setControlsEnabled(true)
+
+                    progressBar.progress = 0
+
+                    showDiagnosticFailure(
+                        snapshot,
+                        "AI service test failed"
+                    )
+                }
+            }
+        }
+    }
+
+    private fun copyDiagnostics() {
+
+        val report =
+            diagnostics.latestReport()
+
+        val clipboard =
+            getSystemService(
+                android.content.ClipboardManager::class.java
+            )
+
+        clipboard.setPrimaryClip(
+            android.content.ClipData.newPlainText(
+                "Kids AI Video Creator diagnostics",
+                report
+            )
+        )
+
+        Toast.makeText(
+            this,
+            "Diagnostics copied to clipboard",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun clearFailedGeneration() {
+
+        transformer?.cancel()
+
+        transformer = null
+
+        videoPreview.stopPlayback()
+
+        generatedVideoFile?.delete()
+
+        generatedVideoFile = null
+
+        storySceneFiles.forEach {
+            it.delete()
+        }
+
+        storySceneFiles.clear()
+
+        storyCacheKey = null
+
+        cacheDir
+            .listFiles()
+            ?.filter {
+
+                it.name.startsWith(
+                    "ai_generated_"
+                ) ||
+                it.name.startsWith(
+                    "story_"
+                ) ||
+                it.name.startsWith(
+                    "story_joined_"
+                ) ||
+                it.name.startsWith(
+                    "kids_video_mixed_"
+                )
+            }
+            ?.forEach {
+                it.delete()
+            }
+
+        diagnostics.clear()
+
+        progressBar.progress = 0
+
+        statusLabel.text =
+            "Ready — failed generation state cleared."
+
+        diagnosticLabel.text =
+            "Diagnostics cleared."
+
+        modeInfo.text =
+            "Single Clip keeps the original proven generation path. " +
+            "Story Mode uses sequential 5-second scenes."
+
+        exportButton.isEnabled = false
+
+        setControlsEnabled(true)
+
+        Toast.makeText(
+            this,
+            "Failed generation state cleared",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun showDiagnosticFailure(
+        snapshot: DiagnosticSnapshot,
+        prefix: String
+    ) {
+
+        statusLabel.text =
+            "$prefix — ${snapshot.userMessage}"
+
+        diagnosticLabel.text =
+            snapshot.summary
+
+        Toast.makeText(
+            this,
+            "${snapshot.category} at ${snapshot.stage}",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
+    private fun updateDiagnosticSummary() {
+
+        runOnUiThread {
+
+            diagnosticLabel.text =
+                diagnostics.summary()
+        }
     }
 
     private fun setBusy(busy: Boolean, message: String, progress: Int) {
@@ -708,7 +1771,14 @@ class MainActivity : AppCompatActivity() {
         durationSpinner.isEnabled = enabled
         audioButton.isEnabled = enabled
         generateButton.isEnabled = enabled
-        exportButton.isEnabled = enabled && generatedVideoFile?.exists() == true
+
+        testServiceButton.isEnabled = enabled
+        clearGenerationButton.isEnabled = enabled
+        copyDiagnosticsButton.isEnabled = true
+
+        exportButton.isEnabled =
+            enabled &&
+            generatedVideoFile?.exists() == true
     }
 
     private fun updateStatus(message: String, progress: Int) {

@@ -147,6 +147,46 @@
             android:text="Ready"
             android:textColor="@color/text_primary" />
 
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="Diagnostics"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/diagnosticLabel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:background="#EEEAF7"
+            android:padding="10dp"
+            android:text="No diagnostic failure recorded yet."
+            android:textColor="@color/text_primary"
+            android:textIsSelectable="true"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/testServiceButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Test AI Service" />
+
+        <Button
+            android:id="@+id/copyDiagnosticsButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="Copy Diagnostics" />
+
+        <Button
+            android:id="@+id/clearGenerationButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="Clear Failed Generation" />
+
         <VideoView
             android:id="@+id/videoPreview"
             android:layout_width="match_parent"
